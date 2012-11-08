@@ -1,0 +1,4 @@
+#!/bin/bash
+gcc -o client client.c -Wall -lpthread
+chmod u+x client
+

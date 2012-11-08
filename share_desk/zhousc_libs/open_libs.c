@@ -1,0 +1,233 @@
+#include "open_source.h"
+void open_print_debug (const char *func,size_t line,const char *fmt, ...)
+{
+    static int count=0;
+    char buf[4096]={0};
+    va_list ap;
+    va_start (ap, fmt);
+    vsnprintf(buf,4096,fmt,ap);
+    va_end (ap);
+    printf("[%d %s %ld]\t==> %s",count++,func,line,buf);
+    return;
+}
+
+void send_broadcast(char *device,int port,char *msg,int msglen)
+{
+    struct ifreq ifq;
+    struct timeval timeout={3,0};
+    char broadcast_ip[16];
+    int sockfd=-1;
+    int tmp=0;
+    int len=0;
+    int to_send_len=0;
+    int so_broadcast=1;
+    int send_count=0;
+    struct sockaddr_in  cliaddr;
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if(sockfd==-1)
+    {
+        print_msg("create socket failue,%s\n",strerror(errno));
+        return;
+    }
+    //print_msg("network device : [%s]\n",device);
+    strcpy (ifq.ifr_name, device);
+    if (ioctl (sockfd, SIOCGIFADDR, &ifq) < 0) {
+        print_msg("ioctl failue,%s\n",strerror(errno));
+		close(sockfd);
+		return;
+    }
+    snprintf (broadcast_ip, 16,"%s",
+    inet_ntoa(((struct sockaddr_in*)&(ifq.ifr_addr))->sin_addr));
+    tmp=strlen(broadcast_ip)-1;
+    //print_msg("broadcast_ip=%s\n",broadcast_ip);
+    while(1)
+    {
+        if(broadcast_ip[tmp] != '.')
+        {
+            broadcast_ip[tmp]=0;
+        }
+        else
+        {
+            break;
+        }
+        tmp--;
+    }
+    tmp++;
+    broadcast_ip[tmp++]='2';
+    broadcast_ip[tmp++]='9';
+    //broadcast_ip[tmp++]='5';
+    broadcast_ip[tmp]=0;
+
+    cliaddr.sin_family      = AF_INET;
+    cliaddr.sin_addr.s_addr = inet_addr (broadcast_ip);
+    cliaddr.sin_port        = htons(port);
+
+    //print_msg("broadcast_ip=%s port=%d\n",broadcast_ip,port);
+    if(setsockopt(sockfd,SOL_SOCKET,SO_BROADCAST,&so_broadcast,sizeof(so_broadcast)) < 0)
+    {
+        print_msg("%s\n",strerror(errno));
+    }
+    if(setsockopt(sockfd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout)) < 0)
+    {
+        print_msg("%s\n",strerror(errno));
+    }
+    if(setsockopt(sockfd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)) < 0)
+    {
+        print_msg("%s\n",strerror(errno));
+    }
+    len=sizeof(struct sockaddr_in);
+	if(msglen == 0)
+	{
+		to_send_len = strlen(msg);
+	}
+	else
+	{
+		to_send_len = msglen;
+	}
+    send_count=sendto(sockfd,msg,to_send_len, 0, (struct sockaddr *)&cliaddr, len);
+
+	if(send_count != to_send_len)
+    {
+        print_msg("%s\n",strerror(errno));
+    }
+    else
+    {
+        ;//print_msg("send %d,%s\n",strlen(msg),device);
+    }
+    close(sockfd);
+}
+
+static int create_thread (int *port);
+static void *recv_broadcast_thread(void *arg);
+
+void recv_broadcast(int *port)
+{
+	//recv_broadcast_thread(port);
+	create_thread(port);
+}
+
+char g_external_data[MSG_SIZE]={0};
+int g_external_data_flag=0;
+
+static int g_external_clear_data=0;
+static int g_msg_cur_index=0;
+static char g_msg[MSG_COUNT][MSG_SIZE];
+static int g_msg_index=0;
+
+void clear_data(void)
+{
+	g_external_clear_data=1;
+	while(g_external_clear_data)
+	{
+		usleep(1);
+	}
+}
+
+
+
+
+static void *recv_broadcast_thread(void *arg)
+{
+	int port=*(int *)arg;
+	int sockfd=-1;
+    int send_count=0;
+    char  buf[BUFFER_SIZE];
+    socklen_t   len=sizeof(struct sockaddr_in);
+    struct sockaddr_in  servaddr, cliaddr;
+
+    if(sockfd==-1)
+    {
+        sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+        if(sockfd==-1)
+        {
+            print_msg("create socket failue,%s\n",strerror(errno));
+            return NULL;
+        }
+        else
+        {
+            print_msg("create recv ok port=%d\n",port);
+        }
+        bzero(&servaddr, sizeof(struct sockaddr_in));
+        servaddr.sin_family      = AF_INET;
+        servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+        servaddr.sin_port        = htons(port);
+        if(bind(sockfd, (struct sockaddr *) &servaddr, sizeof(struct sockaddr_in)) < 0)
+        {
+            print_msg("bind socket failue %s\n",strerror(errno));
+			close(sockfd);
+			return NULL;
+        }
+        //else
+        //{
+        //    print_msg("bind socket ok\n");
+        //}
+    }
+    len=sizeof(struct sockaddr_in);
+    while(1)
+    {
+        memset(buf,0,1024);
+        send_count=recvfrom(sockfd, buf,1024, MSG_DONTWAIT, (struct sockaddr *)&cliaddr, &len);
+		if(send_count >= 0)
+		{
+		   memcpy(g_msg[g_msg_index],buf,1024);
+		   g_msg_index++;
+		   if(g_msg_cur_index == (g_msg_index % MSG_COUNT))
+		   {
+				g_msg_cur_index++;
+				if(g_msg_cur_index >= MSG_COUNT)
+				{
+					g_msg_cur_index=0;
+				}
+		   }
+		   if(g_msg_index >= MSG_COUNT)
+		   {
+				g_msg_index=0;
+		   }
+		   //print_msg("[%d %d] [%d %s] [%s]\n",
+	       //   g_msg_index,g_msg_cur_index,cliaddr.sin_port,inet_ntoa(cliaddr.sin_addr),buf);
+
+		  //print_msg("00 [%d %d]\n",g_msg_index,g_msg_cur_index);
+		}
+		else
+		{
+			usleep(1);
+			if(g_external_clear_data)
+			{
+				g_msg_cur_index=g_msg_index;
+				g_external_clear_data=0;
+				g_external_data_flag=0;
+				usleep(100000);
+			}
+			if(g_external_data_flag==0 && g_msg_cur_index != g_msg_index)
+			{
+				memcpy(g_external_data,g_msg[g_msg_cur_index],1024);
+				g_external_data_flag=1;
+				g_msg_cur_index++;
+				if(g_msg_cur_index >= MSG_COUNT)
+				{
+					g_msg_cur_index=0;
+				}
+				//print_msg("11 [%d %d]\n",g_msg_index,g_msg_cur_index);
+			}
+			
+		}
+    }
+    close(sockfd);
+	print_msg("end of recv\n");
+	return NULL;
+}
+
+
+static int create_thread (int *port)
+{
+	pthread_attr_t thread;
+	pthread_t inputthreadid;
+	pthread_attr_init (&thread);
+	pthread_attr_setschedpolicy (&thread, SCHED_RR);
+	//print_msg("port=%d\n",*port);
+	if (pthread_create (&inputthreadid, &thread, recv_broadcast_thread, (void *)port))
+	{
+		return -1;
+	}
+	return 0;
+}

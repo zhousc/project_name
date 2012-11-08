@@ -1,0 +1,187 @@
+#include "source.h"
+
+#define BOOL   unsigned char
+#define U8     unsigned char
+#define U16    unsigned short
+
+static int fd;
+static unsigned char if_mac[6];
+static int if_index;
+
+U8  gBuf[2000] = {0};
+U8  gTxBuf[2000];
+U16 gLen=0;
+
+void Decode_Udp(char *buffer);
+
+BOOL InitEtherNetIf(void)
+{
+    struct ifreq req;
+
+    if ( (fd = socket(PF_PACKET, SOCK_RAW, htons( 0x0003 ) ) ) < 0 )
+    {                        
+        print_msg( "failed to create raw socket!\n" );
+        return FALSE;
+    }
+
+    strcpy( req.ifr_name, "eth0" );
+    if ( ioctl( fd, SIOCGIFFLAGS, &req ) < 0 )
+    {
+        print_msg( "failed to do ioctl! %s\n",strerror(errno));
+        return FALSE;
+    }
+
+    req.ifr_flags |= IFF_PROMISC;
+
+    if ( ioctl( fd, SIOCSIFFLAGS, &req ) < 0 )
+    {
+        print_msg( "failed to set eth0 into promisc mode!" );
+        return FALSE;
+    }
+
+    if ( ioctl( fd, SIOCGIFHWADDR, &req ) < 0 )
+    {
+        print_msg( "failed to get IF hw address!" );
+        return FALSE;
+    }
+
+    memcpy( if_mac, req.ifr_hwaddr.sa_data, sizeof(if_mac) );
+
+    if ( ioctl( fd, SIOCGIFINDEX, &req ) < 0 )
+    {
+        print_msg( "failed to get IF hw address!" );
+        return FALSE;
+    }
+
+    if_index = req.ifr_ifindex;
+    return TRUE;
+}
+
+ 
+
+BOOL GetPacket(U8 *buf, U16 *len)
+{
+    int length = 0;
+    int i=0;
+    //print_msg("begin:\n");
+    length = recvfrom( fd, buf, 2000, 0, NULL, NULL );
+    if ( length < 0 )
+    {
+        return 0;
+    } 
+    else
+    {
+        *len = length;
+        if(length > 42)
+        {
+            
+            for(i=0;i<length;i++)
+            {
+                if(buf[i]=='e' && buf[i+1]=='x' && buf[i+2]=='x')
+                {
+                    print_msg("===============[%d]\n",length);
+                    //print_msg("begin:%d %d\n",length,i);
+                    //print_msg("[%.4s]\n",buf+i);
+                    //print_msg("=====%d %d\n",buf[8],buf[9]);
+                    //print_msg("=====%x %x\n",buf[8],buf[9]);
+                    Decode_Udp((char *)buf);
+                    break;
+                }
+            }
+        }
+        return 1;
+    }
+}
+
+void Decode_Udp(char *buffer)
+{
+    int proto;
+    char  *ethhead, *iphead, /* *tcphead,*udphead,*icmphead,*/*p;
+    short all_length=0;
+    
+    
+    ethhead = buffer;  
+    p = ethhead;  
+    printf("MAC: %.2X:%02X:%02X:%02X:%02X:%02X==>"  
+                "%.2X:%.2X:%.2X:%.2X:%.2X:%.2X\n",  
+    p[6]&0XFF, p[7]&0XFF, p[8]&0XFF, p[9]&0XFF, p[10]&0XFF, p[11]&0XFF,  
+    p[0]&0XFF, p[1]&0XFF, p[2]&0XFF,p[3]&0XFF, p[4]&0XFF, p[5]&0XFF);  
+
+    iphead = ethhead + 14;    
+    p = iphead + 12; 
+    
+    printf("IP: %d.%d.%d.%d => %d.%d.%d.%d\n",  
+    p[0]&0XFF, p[1]&0XFF, p[2]&0XFF, p[3]&0XFF,  
+    p[4]&0XFF, p[5]&0XFF, p[6]&0XFF, p[7]&0XFF);  
+    proto = (iphead + 9)[0];  
+    p = iphead + 20;  
+    printf("Protocol:");  
+    switch(proto)  
+    {  
+        case IPPROTO_ICMP: printf("ICMP\n");break;  
+        case IPPROTO_IGMP: printf("IGMP\n");break;  
+        case IPPROTO_IPIP: printf("IPIP\n");break;  
+        case IPPROTO_TCP :  
+        case IPPROTO_UDP :   
+            printf("%s,", proto == IPPROTO_TCP ? "TCP": "UDP");   
+            printf("source port: %u,",((p[0]<<8)&0XFF00) |  (p[1]&0XFF));  
+            printf("dest port: %u\n", ((p[2]<<8)&0XFF00) | (p[3]&0XFF));  
+            break;  
+        case IPPROTO_RAW : printf("RAW\n");break;  
+        default:
+            printf("Unkown, please query in include/linux/in.h\n");  
+    }
+    all_length=*(short *)(iphead+2);
+    printf("all_length=%d\n",all_length);
+    printf("shoubu zongchang=%x %x\n",iphead[0]>>4,iphead[0]&0xf);
+    printf("all_length=%d %d\n",iphead[2],iphead[3]);
+}
+
+BOOL SendPacket(U8 *buf, U16 len)
+{
+    struct sockaddr_ll link;
+    link.sll_ifindex = if_index;
+    memcpy(link.sll_addr, buf, link.sll_halen);
+
+    if ( sendto( fd, buf, len, 0, (struct sockaddr *)&link, sizeof(link) ) < 0 )
+    {
+        print_msg( "failed to send to RAW socket!\r\n" );   
+        return 0;
+    }
+    return 1;
+}
+
+
+ 
+
+void DispalyBuf(U8 *buf,U16 size)
+{
+    //int i;
+    //print_msg("end:\n");
+    if(buf[0]=='e')
+       print_msg("%d \n",size);
+}
+   
+   
+   
+int main(void)
+{
+    BOOL ret;   
+
+    for(ret =0;ret<64;ret++) gTxBuf[ret]=ret;
+
+    if(InitEtherNetIf())
+    {
+        //DispalyBuf(gTxBuf,64);
+        //SendPacket(gTxBuf,64);
+        while(1)
+        {
+            if(GetPacket(gBuf,&gLen))
+            {
+                DispalyBuf(gBuf,gLen);
+                memset(gBuf,0,2000);
+            }
+        } 
+    }
+    return 0;
+}
